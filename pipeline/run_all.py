@@ -34,18 +34,44 @@ def refresh_token():
     return creds.token
 
 def http_write(sheet_name, values):
-    """Прямая запись в Sheet через REST API (без gspread quota)."""
+    """Прямая запись в Sheet через REST API с батчингом по 500 строк."""
+    if not values:
+        return 0
+
     token = refresh_token()
-    resp = requests.put(
-        f'https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{sheet_name}!A1:ZZ200000',
-        headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
-        params={'valueInputOption': 'RAW'},
-        json={'values': values},
-        timeout=60,
+    headers_req = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+
+    # Сначала очищаем лист
+    requests.post(
+        f'https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{sheet_name}!A1:ZZ200000:clear',
+        headers=headers_req,
+        timeout=120,
     )
-    if resp.status_code != 200:
-        raise Exception(f"Sheets write error {resp.status_code}: {resp.text[:300]}")
-    return resp.json().get('updatedCells', 0)
+
+    # Пишем батчами по 500 строк
+    BATCH = 500
+    total_cells = 0
+    for i in range(0, len(values), BATCH):
+        chunk = values[i:i + BATCH]
+        start_row = i + 1
+        end_row = i + len(chunk)
+        range_name = f'{sheet_name}!A{start_row}:ZZ{end_row}'
+
+        token = refresh_token()  # обновляем токен каждый батч
+        resp = requests.put(
+            f'https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{range_name}',
+            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+            params={'valueInputOption': 'RAW'},
+            json={'range': range_name, 'majorDimension': 'ROWS', 'values': chunk},
+            timeout=120,
+        )
+        if resp.status_code != 200:
+            raise Exception(f"Sheets write error {resp.status_code}: {resp.text[:300]}")
+        total_cells += resp.json().get('updatedCells', 0)
+        print(f"  Записано строк {i+1}–{i+len(chunk)}/{len(values)}", end='\r')
+
+    print()
+    return total_cells
 
 # Делаем доступными для скриптов
 import builtins
