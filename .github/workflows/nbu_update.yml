@@ -28,8 +28,12 @@ jobs:
           pip install requests pandas gspread google-auth google-auth-httplib2
 
       - name: Write service account key
+        env:
+          SA_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
         run: |
-          echo '${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}' > /tmp/service_account.json
+          python3 -c "import os,json; d=os.environ['SA_JSON']; json.loads(d); open('/tmp/service_account.json','w').write(d)"
+          echo "✅ Service account JSON validated"
+
 
       - name: Run pipeline
         env:
