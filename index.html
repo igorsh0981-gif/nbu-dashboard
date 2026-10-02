@@ -12470,6 +12470,8 @@ var PptxGenJS=function(){"use strict";function T(e){return e&&"object"==typeof e
       <span style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text2)"><span style="width:10px;height:10px;border-radius:2px;background:#B87000;display:inline-block"></span>Готов к выпуску</span>
       <span style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text2)"><span style="width:10px;height:10px;border-radius:2px;background:#5C6BC0;display:inline-block"></span>Запланирован</span>
       <span style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text2)"><span style="width:10px;height:10px;border-radius:2px;background:#2E7D32;display:inline-block"></span>Выпущен</span>
+      <span title="Планируемая дата окончания прошла, релиз не выпущен" style="display:flex;align-items:center;gap:3px;font-size:11px;font-weight:700;color:#C62828"><span style="width:10px;height:10px;border-radius:2px;background:#C62828;display:inline-block"></span>Просрочен</span>
+      <span title="Перерасход срока: от планируемой даты окончания до сегодня" style="display:flex;align-items:center;gap:3px;font-size:11px;color:var(--text2)"><span style="width:14px;height:10px;border-radius:2px;border:1px dashed #C62828;background:repeating-linear-gradient(135deg,rgba(198,40,40,0.28) 0 4px,rgba(198,40,40,0.08) 4px 8px);display:inline-block"></span>Перерасход срока</span>
     </div>
   </div>
   <div id="rdm-tabs" style="display:flex;gap:8px;margin-bottom:12px"></div>
@@ -14045,7 +14047,8 @@ const RDM_COLORS={
   active:  {bar:'#185FA5',label:'В работе'},
   ready:   {bar:'#B87000',label:'Готов к выпуску'},
   released:{bar:'#2E7D32',label:'Выпущен'},
-  planned: {bar:'#5C6BC0',label:'Запланирован'}
+  planned: {bar:'#5C6BC0',label:'Запланирован'},
+  overdue: {bar:'#C62828',label:'Просрочен'}
 };
 const RDM_MONTHS=['ЯНВ','ФЕВ','МАР','АПР','МАЙ','ИЮН','ИЮЛ','АВГ','СЕН','ОКТ','НОЯ','ДЕК'];
 let rdmTab='active';
@@ -14092,6 +14095,24 @@ function rdmWeekOfMonth(date){
   const first=new Date(date.getFullYear(),date.getMonth(),1);
   const shift=(first.getDay()+6)%7;                       // сдвиг 1-го числа: пн=0 … вс=6
   return Math.min(3,Math.floor((date.getDate()-1+shift)/7));
+}
+
+// ── Просроченные релизы ──────────────────────────────────────────────
+// Просрочка — производное состояние, в Jira её не хранят: статус остаётся
+// «В работе». Релиз просрочен, если планируемая дата окончания (release_date)
+// прошла, а статус не «Выпущен».
+function relOverdueDays(r){
+  if(!r||r.s==='released') return 0;
+  const d=rdmParseDate(r.d);
+  if(!d) return 0;
+  d.setHours(0,0,0,0);
+  const today=new Date(); today.setHours(0,0,0,0);
+  const days=Math.round((today-d)/86400000);
+  return days>0?days:0;
+}
+function isRelOverdue(r){ return relOverdueDays(r)>0; }
+function rdmColorFor(r){
+  return isRelOverdue(r) ? RDM_COLORS.overdue : (RDM_COLORS[r.s]||{bar:'#888',label:r.s||''});
 }
 
 function renderRdmGrid(){
@@ -14197,9 +14218,16 @@ function renderRdmGrid(){
     return mi*WEEKS+w;
   }
 
+  // Абсолютный индекс текущей недели — нужен для зоны перерасхода просроченных релизов
+  const curAbsWkIdx=(()=>{
+    const i=monthCols.findIndex(c=>c.m===curMonth&&c.y===curYear);
+    return i<0?-1:i*WEEKS+curWeekOfMonth;
+  })();
+
   filteredRels.forEach((r,ri)=>{
     const pct=r.tot>0?Math.round((r.done||0)/r.tot*100):0;
-    const col=RDM_COLORS[r.s]||{bar:'#888'};
+    const ovDays=relOverdueDays(r);
+    const col=rdmColorFor(r);
     const endDate=rdmParseDate(r.d);
     const startDate=rdmParseDate(r.start);
     const endLabel=endDate?(String(endDate.getDate()).padStart(2,'0')+'.'+String(endDate.getMonth()+1).padStart(2,'0')+'.'+String(endDate.getFullYear()).slice(2)):'—';
@@ -14222,10 +14250,11 @@ function renderRdmGrid(){
 
     html+='<div style="display:grid;grid-template-columns:'+gridTpl+';gap:0;margin-bottom:2px;align-items:stretch">';
     // Левая колонка
-    html+=`<div onclick="rdmToggle('rdm-det-${ri}')" style="padding:4px 8px;cursor:pointer;background:var(--bg2);border:1px solid var(--border);border-right:none;border-radius:6px 0 0 6px;display:flex;flex-direction:column;justify-content:center;min-height:36px">`
+    html+=`<div onclick="rdmToggle('rdm-det-${ri}')" style="padding:4px 8px;cursor:pointer;background:${ovDays?'rgba(198,40,40,0.07)':'var(--bg2)'};border:1px solid ${ovDays?'#C62828':'var(--border)'};border-right:none;border-radius:6px 0 0 6px;display:flex;flex-direction:column;justify-content:center;min-height:36px">`
       +'<div style="display:flex;align-items:center;gap:5px">'
       +'<span style="background:'+col.bar+';color:#fff;border-radius:3px;padding:1px 5px;font-size:11px;font-weight:700">'+r.id+'</span>'
       +'<span style="font-size:11px;color:var(--text3)">'+pct+'%</span>'
+      +(ovDays?'<span title="Планируемая дата окончания прошла '+ovDays+' дн. назад, релиз не выпущен" style="margin-left:auto;background:#C62828;color:#fff;border-radius:3px;padding:1px 5px;font-size:9px;font-weight:700;white-space:nowrap">Просрочен '+ovDays+' дн.</span>':'')
       +'</div>'
       +(r.desc?'<div style="font-size:9px;color:var(--text3);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+r.desc+'</div>':'')
       +'</div>';
@@ -14236,6 +14265,8 @@ function renderRdmGrid(){
       const w=wi%WEEKS;
       const inBar=wkStart>=0&&wi>=wkStart&&wi<=wkEnd;
       const isS=wi===wkStart, isE=wi===wkEnd;
+      // Зона перерасхода: от планируемого окончания до текущей недели включительно
+      const inOver=ovDays>0&&wkEnd>=0&&curAbsWkIdx>=0&&wi>wkEnd&&wi<=curAbsWkIdx;
       const isCurCol=monthCols[mi].m===curMonth&&monthCols[mi].y===curYear&&w===curWeekOfMonth;
       const isMonthBorder=w===0;
       html+='<div style="border-top:1px solid var(--border);border-bottom:1px solid var(--border);'
@@ -14253,6 +14284,16 @@ function renderRdmGrid(){
           +'<div style="position:absolute;left:0;top:0;bottom:0;width:'+pct+'%;background:rgba(255,255,255,0.22);pointer-events:none"></div>'
           +(isE?'<span style="font-size:9px;color:#fff;font-weight:600;padding:0 4px;position:relative;z-index:1;white-space:nowrap;margin-left:auto">'+pct+'%·'+endLabel+'</span>'
             :(isS?'<span style="font-size:9px;color:rgba(255,255,255,0.9);padding-left:4px;position:relative;z-index:1">'+pct+'%</span>':''))
+          +'</div>';
+      }
+      if(inOver){
+        const isLastOver=wi===curAbsWkIdx;
+        html+='<div title="Перерасход срока: '+ovDays+' дн." style="position:absolute;top:50%;transform:translateY(-50%);left:0;right:'+(isLastOver?'3px':'0')+';height:22px;'
+          +'border-top:1px dashed #C62828;border-bottom:1px dashed #C62828;'
+          +(isLastOver?'border-right:1px dashed #C62828;border-radius:0 4px 4px 0;':'')
+          +'background:repeating-linear-gradient(135deg,rgba(198,40,40,0.28) 0 5px,rgba(198,40,40,0.08) 5px 10px);'
+          +'display:flex;align-items:center;justify-content:flex-end">'
+          +(isLastOver?'<span style="font-size:9px;color:#C62828;font-weight:700;padding-right:4px;white-space:nowrap">+'+ovDays+' дн.</span>':'')
           +'</div>';
       }
       html+='</div>';
@@ -14293,9 +14334,79 @@ function renderRdmGrid(){
   }
 }
 
+// ── Выборка рисков по задачам релиза ────────────────────────────────
+// Категории, у которых есть конкретный перечень задач. «Риск срыва даты»
+// сюда не входит: его выборка — все открытые задачи релиза, по ней
+// подсветились бы все эпики без разбора. Просрочку по дате вместо него
+// даёт категория overdue (due_date в прошлом).
+// «Концентрация этапов» в подсветку эпиков не входит (epic:false): её выборка —
+// все задачи в работе и на тестировании, по ней засветился бы почти каждый эпик.
+// Счётчик в блоке «Риски» она при этом получает.
+const RISK_TASK_CATS_ALL=[
+  {key:'stale',        label:'Застой задач',          color:'#C62828', hard:true,  epic:true},
+  {key:'overdue',      label:'Просрочен срок задачи', color:'#AD1457', hard:true,  epic:true},
+  {key:'critical',     label:'Критический приоритет', color:'#6B21A8', hard:true,  epic:true},
+  {key:'noasgn',       label:'Без исполнителя',       color:'#B87000', hard:false, epic:true},
+  {key:'concentration',label:'Концентрация этапов',   color:'#0277BD', hard:false, epic:false}
+];
+const RISK_TASK_CATS=RISK_TASK_CATS_ALL.filter(c=>c.epic);
+
+function riskTasksForRelease(relId){
+  const ud=BUNDLE.undist_tasks||{};
+  const relTasks=Object.values(BUNDLE.asgn_tasks||{}).flat().filter(t=>t.v===relId);
+  const isOpen=t=>{const c=STATUS_CAT_MAP[(t.s||'').toUpperCase()];return c!=='done'&&c!=='rejected';};
+  return {
+    stale:        (BUNDLE.stale||[]).filter(t=>t.v===relId),
+    overdue:      (ud.overdue||[]).filter(t=>t.v===relId),
+    critical:     relTasks.filter(t=>(t.p||'').toLowerCase().includes('крит')&&isOpen(t)),
+    noasgn:       (ud.no_asgn||[]).filter(t=>t.v===relId),
+    concentration:relTasks.filter(t=>['testing','inprog'].includes(STATUS_CAT_MAP[(t.s||'').toUpperCase()]||''))
+  };
+}
+
+// Эпик → {cats:{key:count}, total (уникальных задач), hard}
+function epicRiskMap(riskSets){
+  const byEpic={};
+  RISK_TASK_CATS.forEach(c=>{
+    (riskSets[c.key]||[]).forEach(t=>{
+      const ep=t.epic_name||'(без эпика)';
+      const e=byEpic[ep]||(byEpic[ep]={cats:{},keys:new Set(),hard:false,total:0});
+      e.cats[c.key]=(e.cats[c.key]||0)+1;
+      if(t.k) e.keys.add(t.k);
+      if(c.hard) e.hard=true;
+    });
+  });
+  Object.values(byEpic).forEach(e=>{
+    e.total=e.keys.size||Object.values(e.cats).reduce((s,n)=>s+n,0);
+  });
+  return byEpic;
+}
+
+function openEpicRiskTasks(relId,epicName){
+  const sets=riskTasksForRelease(relId);
+  const seen=new Set(), rows=[];
+  RISK_TASK_CATS.forEach(c=>{   // только категории с подсветкой эпиков
+    (sets[c.key]||[]).forEach(t=>{
+      if((t.epic_name||'(без эпика)')!==epicName) return;
+      const id=t.k||(c.key+'·'+(t.t||''));
+      if(seen.has(id)){
+        const prev=rows.find(x=>x._id===id);
+        if(prev) prev.risk+=', '+c.label;
+        return;
+      }
+      seen.add(id);
+      rows.push({_id:id,k:t.k,d:t.d,t:t.t,status:t.s,a:t.a||'—',risk:c.label});
+    });
+  });
+  openTaskModal('Риски эпика: '+epicName+' — '+relId+' ('+rows.length+')',
+    rows.map(x=>({k:x.k,d:x.d,t:x.t+'  ⚠ '+x.risk,status:x.status,a:x.a})));
+}
+
 function rdmDetailsHTML(r,pct,col){
   const allTasks=Object.values(BUNDLE.asgn_tasks||{}).flat();
   const relTasks=allTasks.filter(t=>t.v===r.id);
+  const riskSets=riskTasksForRelease(r.id);
+  const epicRisk=epicRiskMap(riskSets);
   const epicMap={};
   relTasks.forEach(t=>{
     const ep=t.epic_name||'(без эпика)';
@@ -14303,11 +14414,41 @@ function rdmDetailsHTML(r,pct,col){
     epicMap[ep].tot++;
     if(STATUS_CAT_MAP[(t.s||'').toUpperCase()]==='done') epicMap[ep].done++;
   });
-  const epics=Object.values(epicMap).sort((a,b)=>b.tot-a.tot);
+  // Эпики из выборки рисков, которых нет среди задач релиза (напр. без исполнителя)
+  Object.keys(epicRisk).forEach(ep=>{ if(!epicMap[ep]) epicMap[ep]={name:ep,tot:0,done:0}; });
+  // Сверху — эпики с риском, внутри группы по весу риска, затем по объёму
+  const epics=Object.values(epicMap).sort((a,b)=>{
+    const ra=epicRisk[a.name], rb=epicRisk[b.name];
+    const wa=ra?(ra.hard?2:1):0, wb=rb?(rb.hard?2:1):0;
+    if(wa!==wb) return wb-wa;
+    if(ra&&rb&&ra.total!==rb.total) return rb.total-ra.total;
+    return b.tot-a.tot;
+  });
+  const riskedCnt=Object.values(epicRisk).length;
   const epicsHTML=epics.length
-    ?'<div style="font-size:12px;font-weight:700;color:var(--text1);margin-bottom:8px">Эпики релиза</div>'
+    ?'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">'
+      +'<span style="font-size:12px;font-weight:700;color:var(--text1)">Эпики релиза</span>'
+      +(riskedCnt
+        ?'<span style="font-size:10px;color:#C62828;font-weight:700">'+riskedCnt+' из '+epics.length+' затронуты рисками</span>'
+         +'<span style="font-size:10px;color:var(--text3)">'+RISK_TASK_CATS.map(c=>'<span style="display:inline-flex;align-items:center;gap:3px;margin-right:8px"><span style="width:7px;height:7px;border-radius:50%;background:'+c.color+';display:inline-block"></span>'+c.label+'</span>').join('')+'</span>'
+        :'<span style="font-size:10px;color:var(--green);font-weight:600">рисков по задачам нет</span>')
+      +'</div>'
       +'<div style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:0">'
-      +epics.map(e=>'<span onclick="openEpicTasks(\''+r.id+'\',\''+e.name.replace(/'/g,"\\'")+'\')\" style="background:var(--bg2);border:1px solid var(--border);border-radius:4px;padding:3px 8px;font-size:11px;color:var(--text2);cursor:pointer">· '+e.name+' <b style="color:'+col.bar+'">'+e.tot+'</b> <span style="color:var(--text3)">('+e.done+' done)</span></span>').join('')
+      +epics.map(e=>{
+        const rk=epicRisk[e.name];
+        const esc=e.name.replace(/'/g,"\\'");
+        const bd=rk?(rk.hard?'#C62828':'#B87000'):'var(--border)';
+        const bg=rk?(rk.hard?'rgba(198,40,40,0.08)':'rgba(184,112,0,0.08)'):'var(--bg2)';
+        const dots=rk?RISK_TASK_CATS.filter(c=>rk.cats[c.key]).map(c=>
+          '<span title="'+c.label+': '+rk.cats[c.key]+'" style="width:7px;height:7px;border-radius:50%;background:'+c.color+';display:inline-block"></span>').join(''):'';
+        return '<span onclick="openEpicTasks(\''+r.id+'\',\''+esc+'\')" style="background:'+bg+';border:1px solid '+bd+';'
+          +(rk?'border-left-width:3px;':'')+'border-radius:4px;padding:3px 8px;font-size:11px;color:var(--text2);cursor:pointer;display:inline-flex;align-items:center;gap:5px">'
+          +'<span>· '+e.name+' <b style="color:'+col.bar+'">'+e.tot+'</b> <span style="color:var(--text3)">('+e.done+' done)</span></span>'
+          +(rk?'<span style="display:inline-flex;align-items:center;gap:2px">'+dots+'</span>'
+              +'<span onclick="event.stopPropagation();openEpicRiskTasks(\''+r.id+'\',\''+esc+'\')" title="Показать только задачи из выборки рисков"'
+              +' style="background:'+(rk.hard?'#C62828':'#B87000')+';color:#fff;border-radius:3px;padding:0 5px;font-size:10px;font-weight:700">⚠ '+rk.total+'</span>':'')
+          +'</span>';
+      }).join('')
       +'</div>'
     :'<div style="font-size:11px;color:var(--text3)">Эпики не загружены</div>';
   const risks=calcRisks(r.id);
@@ -14321,8 +14462,10 @@ function rdmDetailsHTML(r,pct,col){
     +riskItems.map(item=>{
       const s=risks[item.key]||0;
       const lvl=riskLevel(s);
+      const cnt=(riskSets[item.key]||[]).length;
       return '<div style="display:flex;align-items:center;gap:8px;cursor:pointer" onclick="rdmOpenRisk(\''+item.key+'\',\''+r.id+'\')">'
-        +'<span style="font-size:11px;font-weight:700;color:var(--text1);min-width:145px">'+item.label+'</span>'
+        +'<span style="font-size:11px;font-weight:700;color:var(--text1);min-width:145px">'+item.label
+        +(riskSets[item.key]?' <span style="font-weight:600;color:var(--text3)">('+cnt+')</span>':'')+'</span>'
         +'<div style="flex:1;height:7px;background:var(--border);border-radius:4px;overflow:hidden">'
         +'<div style="height:100%;width:'+s+'%;background:'+lvl.color+';border-radius:4px;transition:.3s"></div></div>'
         +'<span style="font-size:11px;font-weight:700;color:'+lvl.color+';min-width:32px;text-align:right">'+s+'%</span>'
@@ -14363,7 +14506,8 @@ function rdmDetailsHTML(r,pct,col){
     +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">'
     +'<span style="font-size:13px;font-weight:700;color:var(--text1)">'+r.n+'</span>'
     +'<span class="badge '+(SB[r.s]||'bgr')+'">'+(SL[r.s]||r.s)+'</span>'
-    +(r.d&&r.d!=='—'?'<span style="font-size:11px;color:var(--text3)">Дата: <b>'+r.d+'</b></span>':'')
+    +(relOverdueDays(r)?'<span title="Планируемая дата окончания прошла, релиз не выпущен" style="background:#C62828;color:#fff;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700">Просрочен '+relOverdueDays(r)+' дн.</span>':'')
+    +(r.d&&r.d!=='—'?'<span style="font-size:11px;color:'+(relOverdueDays(r)?'#C62828':'var(--text3)')+'">Дата: <b>'+r.d+'</b></span>':'')
     +'<span style="font-size:13px;font-weight:700;color:'+col.bar+'">'+pct+'%</span>'
     +'<span style="font-size:11px;color:var(--text3)">'+(r.done||0)+' из '+(r.tot||0)+' задач Done</span>'
     +'</div>'
@@ -14428,13 +14572,15 @@ function renderRelCards(){
   const gc=n===1?'n1':'n2';
   const cardHtml=r=>{
     const pct=r.tot>0?Math.round((r.done||0)/r.tot*100):0;
+    const ovDays=relOverdueDays(r);
     const feats=(r.f||[]).slice(0,10).map(f=>`<div style="font-size:12px;margin-bottom:4px">· ${f}</div>`).join('');
-    return `<div class="rdc">
+    return `<div class="rdc"${ovDays?' style="border-color:#C62828;border-left-width:4px;box-shadow:inset 3px 0 0 rgba(198,40,40,0.12)"':''}>
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
         <span style="font-size:15px;font-weight:700">${r.n}</span>
         <span class="badge ${SB[r.s]}">${SL[r.s]}</span>
+        ${ovDays?`<span title="Планируемая дата окончания ${r.d} прошла ${ovDays} дн. назад, релиз не выпущен" style="background:#C62828;color:#fff;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700;white-space:nowrap">Просрочен ${ovDays} дн.</span>`:''}
         ${r.desc?`<span style="font-size:12px;color:var(--text2)">${r.desc}</span>`:''}
-        ${r.d&&r.d!=='—'?`<span style="font-size:12px;color:var(--text3)">Дата: <b>${r.d}</b></span>`:''}
+        ${r.d&&r.d!=='—'?`<span style="font-size:12px;color:${ovDays?'#C62828':'var(--text3)'}">Дата: <b>${r.d}</b></span>`:''}
         <span style="margin-left:auto;font-size:22px;font-weight:700">${pct}%</span>
         <select onchange="setRelStatus('${r.id}',this.value)" style="padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text1);font-size:11px;cursor:pointer">
           <option value="released" ${r.s==='released'?'selected':''}>Выпущен</option>
@@ -15668,7 +15814,10 @@ function renderRiskText(relId){
   el.innerHTML=`
     <div style="margin-bottom:16px">
       <b style="font-size:14px">${rel?`Релиз ${rel.n}`:' Все релизы'}</b>
-      ${rel?`<span style="margin-left:8px;color:var(--text3)">${rel.pct_done||0}% выполнено · До выпуска: ${rel.d}</span>`:''}
+      ${rel?(relOverdueDays(rel)
+        ?`<span style="margin-left:8px;background:#C62828;color:#fff;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700">Просрочен ${relOverdueDays(rel)} дн.</span>
+          <span style="margin-left:8px;color:var(--text3)">${rel.pct_done||0}% выполнено · План выпуска: <span style="color:#C62828;font-weight:700">${rel.d}</span></span>`
+        :`<span style="margin-left:8px;color:var(--text3)">${rel.pct_done||0}% выполнено · До выпуска: ${rel.d}</span>`):''}
     </div>
     ${highRisks.length?`<div style="background:var(--red-l);border-left:3px solid var(--red);padding:10px 14px;border-radius:6px;margin-bottom:10px">
       <b style="color:var(--red)">🔴 Высокие риски:</b><br>
