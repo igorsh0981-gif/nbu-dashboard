@@ -12809,6 +12809,7 @@ var PptxGenJS=function(){"use strict";function T(e){return e&&"object"==typeof e
   <i class="ti ti-device-floppy" style="color:var(--text3)"></i>
   <span style="font-size:12px;color:var(--text2);flex:1">Изменения с борда</span>
   <span id="team-save-status" style="font-size:11px;display:none"></span>
+  <span id="board-state-status-team" style="font-size:11px;display:none"></span>
   <button id="save-team-cfg-btn" onclick="saveTeamConfigToSheet()"
     style="padding:5px 12px;border:none;border-radius:var(--r);background:var(--corp);color:#fff;font-size:12px;cursor:pointer;font-weight:600">
     Сохранить в Sheet
@@ -14030,14 +14031,32 @@ function renderRelSF(){
 function setRelSF(s){relSF=s;renderRelSF();renderRelCards();}
 function setRelStatus(id,ns){
   const r=releases.find(x=>x.id===id);if(!r)return;
-  r.s=ns;
-  // Сохраняем с флагом manual:true — пользователь выставил вручную
-  try{
-    const sv=JSON.parse(localStorage.getItem('rso2')||'{}');
-    sv[id]={status:ns,manual:true};
-    localStorage.setItem('rso2',JSON.stringify(sv));
-  }catch(e){}
+  boardState.release_status=boardState.release_status||{};
+  if(ns==='__auto'){
+    // Вернуть расчёт по данным Jira — ручная правка убирается у всей команды
+    delete boardState.release_status[id];
+    r.s=r.sAuto||r.s;
+    r.manualStatus=false; r.manualStale=false; r.manualStaleWas='';
+  } else {
+    boardState.release_status[id]={status:ns,manual:true};
+    r.s=ns;
+    r.manualStatus=true; r.manualStale=false; r.manualStaleWas='';
+  }
   renderRelSF();renderRelCards();renderKPI();renderProg();
+  try{renderRoadmap();}catch(e){}
+  boardStateWrite('release_status').then(()=>{renderRelCards();});
+}
+
+// Снять все ручные правки, которые Jira уже переросла
+function clearStaleRelStatus(){
+  const stale=releases.filter(r=>r.manualStale);
+  if(!stale.length) return;
+  stale.forEach(r=>{
+    delete (boardState.release_status||{})[r.id];
+    r.manualStale=false; r.manualStaleWas='';
+  });
+  renderRelCards();
+  boardStateWrite('release_status').then(()=>{renderRelCards();});
 }
 
 // ============================================================
@@ -14582,13 +14601,15 @@ function renderRelCards(){
         ${r.desc?`<span style="font-size:12px;color:var(--text2)">${r.desc}</span>`:''}
         ${r.d&&r.d!=='—'?`<span style="font-size:12px;color:${ovDays?'#C62828':'var(--text3)'}">Дата: <b>${r.d}</b></span>`:''}
         <span style="margin-left:auto;font-size:22px;font-weight:700">${pct}%</span>
-        <select onchange="setRelStatus('${r.id}',this.value)" style="padding:3px 6px;border-radius:6px;border:1px solid var(--border);background:var(--bg2);color:var(--text1);font-size:11px;cursor:pointer">
-          <option value="released" ${r.s==='released'?'selected':''}>Выпущен</option>
-          <option value="active" ${r.s==='active'?'selected':''}>В работе</option>
-          <option value="ready" ${r.s==='ready'?'selected':''}>Готов к выпуску</option>
-          <option value="planned" ${r.s==='planned'?'selected':''}>Запланирован</option>
+        <select onchange="setRelStatus('${r.id}',this.value)" title="${r.manualStatus?'Статус выставлен вручную и записан в таблицу — его видит вся команда':'Статус считается по данным Jira'}" style="padding:3px 6px;border-radius:6px;border:1px solid ${r.manualStatus?'var(--amber)':'var(--border)'};background:var(--bg2);color:var(--text1);font-size:11px;cursor:pointer">
+          <option value="__auto" ${!r.manualStatus?'selected':''}>Авто по Jira${r.sAuto?' ('+(SL[r.sAuto]||r.sAuto)+')':''}</option>
+          <option value="released" ${r.manualStatus&&r.s==='released'?'selected':''}>Выпущен</option>
+          <option value="active" ${r.manualStatus&&r.s==='active'?'selected':''}>В работе</option>
+          <option value="ready" ${r.manualStatus&&r.s==='ready'?'selected':''}>Готов к выпуску</option>
+          <option value="planned" ${r.manualStatus&&r.s==='planned'?'selected':''}>Запланирован</option>
         </select>
       </div>
+      ${r.manualStatus?`<div style="font-size:10px;color:var(--amber);margin-bottom:8px">✎ Статус выставлен вручную, в Jira — <b>${r.jiraStatus==='released'?'выпущена':'не выпущена'}</b></div>`:''}
       ${segBar(r)}
       ${feats?`<div style="height:1px;background:var(--border);margin:10px 0"></div>
         <div style="font-size:11px;font-weight:600;color:var(--text2);margin-bottom:6px">Эпики релиза</div>${feats}`:''}
@@ -14596,7 +14617,17 @@ function renderRelCards(){
       <div style="font-size:10px;color:var(--text3)">JQL: project = NBU423 AND fixVersion = "${r.id}"</div>
     </div>`;
   };
-  let html=`<div class="rel-cards-grid ${gc}">${show.map(r=>cardHtml(r)).join('')}</div>`;
+  // Устаревшие ручные правки: Jira уже выпустила версию, а правка держит её в работе
+  const stale=releases.filter(r=>r.manualStale);
+  let html='';
+  if(stale.length){
+    html+=`<div style="background:var(--amber-l);border-left:3px solid var(--amber);border-radius:6px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+      <span style="font-size:12px;color:var(--text1)"><b>Устаревшие ручные статусы:</b> ${stale.map(r=>r.n+' («'+(SL[r.manualStaleWas]||r.manualStaleWas)+'»)').join(', ')}. В Jira эти версии уже выпущены, поэтому правка не применяется.</span>
+      <button onclick="clearStaleRelStatus()" style="padding:5px 12px;border-radius:16px;border:1px solid var(--amber);background:var(--bg);color:var(--text1);font-size:11px;font-weight:600;cursor:pointer">Убрать правки</button>
+    </div>`;
+  }
+  html+=`<div id="board-state-status" style="display:none;font-size:11px;margin-bottom:10px"></div>`;
+  html+=`<div class="rel-cards-grid ${gc}">${show.map(r=>cardHtml(r)).join('')}</div>`;
   if(rest.length)html+=`<div style="text-align:center;margin-top:10px">
     <button onclick="showMoreRels(this)" style="padding:6px 16px;border-radius:20px;border:1px solid var(--border);background:var(--bg2);font-size:12px;cursor:pointer">Показать ещё ${rest.length}</button>
   </div><div id="rel-more" style="display:none;margin-top:10px"><div class="rel-cards-grid n2">${rest.map(r=>cardHtml(r)).join('')}</div></div>`;
@@ -16077,7 +16108,7 @@ function togM(id,c){
   _saveTeamCfgLocal();
   _markTeamUnsaved();
 }
-function togV(id,c){vacs.find(v=>v.id===id).h=!c;renderTeamAll();_saveTeamCfgLocal();_markTeamUnsaved();}
+function togV(id,c){vacs.find(v=>v.id===id).h=!c;renderTeamAll();boardVacsChanged();}
 function showAllM(){members.forEach(m=>m.h=false);renderTeamAll();}
 function hideAllM(){members.forEach(m=>m.h=true);renderTeamAll();}
 function chgB(id,b){
@@ -16089,7 +16120,7 @@ function chgB(id,b){
   _saveTeamCfgLocal(); // мгновенно сохраняем в localStorage
   _markTeamUnsaved(); // помечаем что есть несохранённые изменения
 }
-function chgVB(id,b){vacs.find(v=>v.id===id).b=b;renderTeamAll();_saveTeamCfgLocal();_markTeamUnsaved();}
+function chgVB(id,b){vacs.find(v=>v.id===id).b=b;renderTeamAll();boardVacsChanged();}
 function delMember(id){
   if(!confirm('Удалить участника из борда?')) return;
   const m=members.find(m=>m.id===id);
@@ -16098,7 +16129,7 @@ function delMember(id){
   _saveTeamCfgLocal();
   _markTeamUnsaved();
 }
-function delVac(id){vacs.splice(vacs.findIndex(v=>v.id===id),1);renderTeamAll();_saveTeamCfgLocal();_markTeamUnsaved();}
+function delVac(id){vacs.splice(vacs.findIndex(v=>v.id===id),1);renderTeamAll();boardVacsChanged();}
 function renderTeamAll(){updTeamStats();renderTeam();renderChips();renderAssign();}
 
 function openAddVac(){
@@ -16108,7 +16139,7 @@ function openAddVac(){
     <div class="fmbtns"><button class="fmbtn" onclick="closeFormModal()">Отмена</button><button class="fmbtn ok" onclick="saveVac()">Добавить</button></div>
   </div>`);
 }
-function saveVac(){const r=document.getElementById('mi-r').value.trim();if(!r)return;vacs.push({id:'v'+vidCtr++,r,b:document.getElementById('mi-b').value,h:false});renderTeamAll();_saveTeamCfgLocal();_markTeamUnsaved();closeFormModal();}
+function saveVac(){const r=document.getElementById('mi-r').value.trim();if(!r)return;vacs.push({id:'v'+vidCtr++,r,b:document.getElementById('mi-b').value,h:false});renderTeamAll();boardVacsChanged();closeFormModal();}
 function openAddEmp(){
   const inTeam=new Set(members.map(m=>m.n));
   const cands=abarsData.filter(a=>!inTeam.has(a.n));
@@ -18178,10 +18209,11 @@ function applyData(b){
 function init(){
   try{
     const pn=document.getElementById('proj-name');if(pn)pn.textContent=BUNDLE.project||'423 НБУ Миллий 3.0';
-    // Загружаем только ручные статусы (manual:true)
-    const saved=JSON.parse(localStorage.getItem('rso2')||'{}');
+    // До загрузки листа показываем последнее известное состояние из кэша.
+    // Источник истины — лист board_state, он придёт с «Обновить из Sheet».
+    const saved=boardStateRelCache();
     releases.forEach(r=>{
-      if(saved[r.id]&&saved[r.id].manual===true) r.s=saved[r.id].status;
+      if(saved[r.id]&&saved[r.id].manual===true){ r.s=saved[r.id].status; r.manualStatus=true; }
     });
   }catch(e){}
   try{buildDDItems('kpi');buildDDItems('prog');buildDDItems('wl');}catch(e){console.error('buildDD',e);}
@@ -18273,14 +18305,35 @@ function sheetReleasesToBundle(rows){
       // % выполнения = только Done (включая READY FOR RELEASE/RFT через STATUS_CAT_MAP)
       const pct_done=total>0?Math.round(done/total*100):0;
       let s='planned';
-      // Читаем сохранённый вручную статус (только manual:true имеет приоритет)
-      const saved=JSON.parse(localStorage.getItem('rso2')||'{}');
+      // Ручной статус: источник истины — лист board_state, localStorage только кэш
+      const saved=boardStateRelCache();
       const savedEntry=saved[r.release];
       // EMERGENCY FALLBACK: если jira_versions не подгрузился (нет дат вообще ни у одного релиза)
       // — используем номер версии как эвристику для старых мобильных релизов (1.x = давно выпущены)
       const noDatesAtAll=!r.release_date&&!r.start_date&&!r.due_date;
       const isOldMobileVer=/^1\.\d+(\s|$)/.test(r.release||'');
-      if(savedEntry && savedEntry.manual===true){
+      // sAuto — статус, посчитанный по данным Jira, без ручной правки.
+      // Нужен, чтобы «вернуть расчёт по Jira» не требовал перезагрузки листа.
+      let sAuto='planned';
+      if(js==='released'){ sAuto='released'; }
+      else if(noDatesAtAll && isOldMobileVer && pct_done>=85){ sAuto='released'; }
+      else {
+        const rd0=r.release_date?new Date(r.release_date):(r.due_date?new Date(r.due_date):null);
+        const t0=new Date(); t0.setHours(0,0,0,0);
+        const passed0=rd0&&!isNaN(rd0)&&rd0<t0;
+        if(pct_done>=93) sAuto='ready';
+        else if(passed0&&pct_done>=70) sAuto='ready';
+        else if(total>0&&(inprog>0||test>0||analytics>0)) sAuto='active';
+        else if(passed0&&todo===0&&backlog===0) sAuto='released';
+        else sAuto='planned';
+      }
+      // Приоритет: явный факт из Jira выше ручной правки.
+      // Ручная правка нужна там, где Jira молчит (jira_status=unreleased).
+      // Если версия в Jira уже ВЫПУЩЕНА — правка устарела и игнорируется,
+      // иначе релиз навсегда застревает в «В работе» у того, кто её когда-то поставил.
+      const manualStale = !!(savedEntry && savedEntry.manual===true
+                             && js==='released' && savedEntry.status!=='released');
+      if(savedEntry && savedEntry.manual===true && !manualStale){
         s=savedEntry.status;
       } else if(js==='released'){
         s='released';
@@ -18308,7 +18361,10 @@ function sheetReleasesToBundle(rows){
         }
       }
       return {
-        id:r.release, n:r.release, s,
+        id:r.release, n:r.release, s, sAuto, jiraStatus:js,
+        manualStatus: !!(savedEntry && savedEntry.manual===true && !manualStale),
+        manualStale,                      // правка есть, но Jira её переросла
+        manualStaleWas: manualStale ? savedEntry.status : '',
         d:r.release_date||'—',
         start:r.start_date||'',
         _due:r.due_date||'',
@@ -18488,7 +18544,7 @@ async function loadFromSheet(){
   txt.textContent='Загрузка...';
   try{
     // Параллельно грузим все листы
-    const [relRows, normRows, qBankRows, qIntRows, teamRows, teamCfgRows, histRows, addRows] = await Promise.all([
+    const [relRows, normRows, qBankRows, qIntRows, teamRows, teamCfgRows, histRows, addRows, boardRows] = await Promise.all([
       fetchSheet('releases'),
       fetchSheet('normalized'),
       fetchSheet('questions_bank').catch(e=>{console.warn('questions_bank:',e);return [];}),
@@ -18496,13 +18552,19 @@ async function loadFromSheet(){
       fetchSheet('team').catch(e=>{console.warn('team:',e);return [];}),
       fetchSheet('team_config').catch(e=>{console.warn('team_config:',e);return [];}),
       fetchSheet('status_history').catch(e=>{console.warn('status_history (запусти nbu_jira_api.py):',e);return [];}),
-      fetchSheet('addiction').catch(e=>{console.warn('addiction:',e);return [];})
+      fetchSheet('addiction').catch(e=>{console.warn('addiction:',e);return [];}),
+      // Правки с борда, общие для команды. Лист может ещё не существовать —
+      // тогда приходит пустой массив и борд честно говорит, что правки локальные.
+      fetchSheet(BOARD_STATE_SHEET).catch(e=>{console.warn(BOARD_STATE_SHEET+':',e);return [];})
     ]);
     // Карточка проекта — отдельным запросом, её отсутствие не должно ломать загрузку
     fetchSheet(PINFO_SHEET)
       .then(rows=>pinfoApplySheetRows(rows))
       .catch(e=>{console.warn(PINFO_SHEET+':',e); pinfoSheetState='missing'; renderPInfo();});
     console.log(`Загружено: releases=${relRows.length}, normalized=${normRows.length}, qBank=${qBankRows.length}, qInt=${qIntRows.length}, team=${teamRows.length}, team_config=${teamCfgRows.length}`);
+
+    // Командные правки разбираем ДО парсинга релизов: парсер берёт из них ручные статусы
+    try{ boardStateLoad(boardRows); }catch(e){ console.error('boardStateLoad',e); }
 
     const relBundle=sheetReleasesToBundle(relRows);
     const normBundle=sheetNormalizedToBundle(normRows);
@@ -18529,6 +18591,8 @@ async function loadFromSheet(){
       ...normBundle
     };
     applyData(merged);
+    // Вакансии и финальная сверка статусов — уже по пересобранному releases[]
+    try{ boardStateApplyToData(); }catch(e){ console.error('boardStateApplyToData',e); }
 
     // БАГ 9: загружаем вопросы из Sheet
     if(qBankRows.length>0){
@@ -18832,8 +18896,9 @@ function applyTeamCfgLocal(){
     if(c.role) m.r=c.role;
     m.h=c.hidden==='1'||c.hidden===true;
   });
-  // Восстанавливаем вакансии, если они сохранялись ранее
-  if(Array.isArray(saved.__vacancies) && saved.__vacancies.length>0){
+  // Восстанавливаем вакансии из локального кэша, только пока лист board_state
+  // не прочитан — иначе локальная копия затирала бы командную
+  if(boardStateStatus!=='ok' && Array.isArray(saved.__vacancies) && saved.__vacancies.length>0){
     vacs=saved.__vacancies.map(v=>({id:v.id,r:v.r,b:v.b,h:v.h==='1'||v.h===true}));
     const maxNum=Math.max(0,...vacs.map(v=>parseInt(String(v.id).replace(/\D/g,''))||0));
     vidCtr=maxNum+1;
@@ -19378,6 +19443,160 @@ async function confirmCloseQ(){
 
 const N8N_SHEET_WRITE_WEBHOOK = 'https://fox81.app.n8n.cloud/webhook/nbu-sheet-write';
 const N8N_ADDICTION_CRUD_WEBHOOK = 'https://fox81.app.n8n.cloud/webhook/nbu-addiction-crud';
+
+// ============================================================
+// BOARD_STATE — правки с борда, общие для всей команды
+// ============================================================
+// Раньше ручные статусы релизов (ключ rso2) и вакансии (team_cfg_v2.__vacancies)
+// жили только в localStorage, поэтому у разных людей борд показывал разное.
+// Теперь источник истины — лист board_state, localStorage остаётся кэшем.
+//
+// Лист board_state, три колонки: key | value | updated_at
+//   строка 2: release_status | "2.7.0=released;4.0.0=active" | 02.10.2026 15:10
+//   строка 3: vacancies      | JSON-массив вакансий          | ...
+// Номера строк фиксированы специально: вебхук nbu-addiction-crud умеет
+// дописывать строки только в лист addiction, а update по range — в любой.
+const BOARD_STATE_SHEET='board_state';
+const BOARD_ROWS={release_status:2, vacancies:3};
+const BOARD_CACHE_KEY='board_state_v1';
+// '' — не читали, 'ok' | 'missing' | 'saving' | 'saved' | 'error'
+let boardState={release_status:{}, vacancies:null};
+let boardStateStatus='';
+let boardStateError='';
+
+function boardStateNow(){
+  const d=new Date(), p=n=>String(n).padStart(2,'0');
+  return `${p(d.getDate())}.${p(d.getMonth()+1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// "2.7.0=released;4.0.0=active" → {'2.7.0':{status:'released',manual:true}, ...}
+function boardParseRelStatus(str){
+  const out={};
+  String(str||'').split(';').forEach(pair=>{
+    const i=pair.indexOf('=');
+    if(i<1) return;
+    const id=pair.slice(0,i).trim(), st=pair.slice(i+1).trim();
+    if(id&&RDM_COLORS[st]&&st!=='overdue') out[id]={status:st,manual:true};
+  });
+  return out;
+}
+function boardSerializeRelStatus(){
+  return Object.entries(boardState.release_status||{})
+    .filter(([,v])=>v&&v.manual===true&&v.status)
+    .map(([id,v])=>id+'='+v.status).join(';');
+}
+
+// Кэш для парсера релизов: лист, если он прочитан, иначе localStorage
+function boardStateRelCache(){
+  if(boardStateStatus==='ok'||boardStateStatus==='saved'||boardStateStatus==='saving')
+    return boardState.release_status||{};
+  try{
+    const c=JSON.parse(localStorage.getItem(BOARD_CACHE_KEY)||'null');
+    if(c&&c.release_status) return c.release_status;
+    // миграция со старого ключа
+    return JSON.parse(localStorage.getItem('rso2')||'{}');
+  }catch(e){ return {}; }
+}
+
+function boardStateCacheSave(){
+  try{ localStorage.setItem(BOARD_CACHE_KEY, JSON.stringify(boardState)); }catch(e){}
+}
+
+// Шаг 1: разбираем строки листа. Вызывается ДО пересборки releases[],
+// чтобы парсер релизов сразу брал командные правки, а не локальный кэш.
+function boardStateLoad(rows){
+  if(!rows||!rows.length){ boardStateStatus='missing'; boardStateRenderStatus(); return; }
+  const byKey={};
+  rows.forEach(r=>{ if(r.key) byKey[r.key]=r.value||''; });
+  boardState.release_status=boardParseRelStatus(byKey.release_status);
+  if(byKey.vacancies){
+    try{
+      const arr=JSON.parse(byKey.vacancies);
+      if(Array.isArray(arr)) boardState.vacancies=arr;
+    }catch(e){ console.warn('board_state.vacancies — не разобрался JSON:',e); }
+  }
+  boardStateStatus='ok';
+  boardStateCacheSave();
+  boardStateRenderStatus();
+}
+
+// Шаг 2: раскладываем состояние по releases[] и vacs[]. Только после applyData().
+function boardStateApplyToData(){
+  if(boardStateStatus!=='ok') return;
+  // Статусы релизов. Jira «выпущена» бьёт ручную правку — то же правило, что в парсере.
+  releases.forEach(r=>{
+    const ov=boardState.release_status[r.id];
+    const stale=!!(ov&&ov.manual===true&&r.jiraStatus==='released'&&ov.status!=='released');
+    r.manualStale=stale;
+    r.manualStaleWas=stale?ov.status:'';
+    if(ov&&ov.manual===true&&!stale){ r.s=ov.status; r.manualStatus=true; }
+    else if(r.sAuto){ r.s=r.sAuto; r.manualStatus=false; }
+  });
+  // Вакансии
+  if(Array.isArray(boardState.vacancies)){
+    vacs=boardState.vacancies.map(v=>({id:v.id,r:v.r,b:v.b,h:v.h===true||v.h==='1'}));
+    const maxNum=Math.max(0,...vacs.map(v=>parseInt(String(v.id).replace(/\D/g,''))||0));
+    vidCtr=maxNum+1;
+  }
+  boardStateRenderStatus();
+}
+
+async function boardStateWrite(key){
+  const row=BOARD_ROWS[key];
+  if(!row) return false;
+  const value = key==='release_status'
+    ? boardSerializeRelStatus()
+    : JSON.stringify(vacs.map(v=>({id:v.id,r:v.r,b:v.b,h:!!v.h})));
+  boardStateCacheSave();
+  boardStateStatus='saving'; boardStateRenderStatus();
+  try{
+    const resp=await fetch(N8N_ADDICTION_CRUD_WEBHOOK,{
+      method:'POST', headers:N8N_AUTH_HEADERS,
+      body:JSON.stringify({
+        action:'update', sheetId:SHEET_ID, rowIndex:row,
+        values:[key, value, boardStateNow()],
+        range:`${BOARD_STATE_SHEET}!A${row}:C${row}`
+      })
+    });
+    if(!resp.ok) throw new Error('HTTP '+resp.status);
+    boardStateStatus='saved';
+  }catch(e){
+    console.error('boardStateWrite('+key+'):',e);
+    boardStateStatus='error'; boardStateError=String(e.message||e);
+  }
+  boardStateRenderStatus();
+  return boardStateStatus==='saved';
+}
+
+// Плашка статуса — общая для релизов и команды, рисуется в обоих местах
+function boardStateRenderStatus(){
+  const map={
+    saving :['var(--text2)','⏳ Сохраняю в таблицу...'],
+    saved  :['var(--green)','✓ Сохранено в таблицу — видно всей команде'],
+    error  :['var(--red)','✕ Не записалось: '+boardStateError+'. Правка осталась только в этом браузере.'],
+    missing:['var(--amber)','⚠ Лист «'+BOARD_STATE_SHEET+'» не найден. Правки видны только в этом браузере.'],
+    ok     :[null,null]
+  };
+  const v=map[boardStateStatus]||[null,null];
+  ['board-state-status','board-state-status-team'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(!el) return;
+    if(!v[0]){ el.style.display='none'; return; }
+    el.style.color=v[0]; el.textContent=v[1]; el.style.display='block';
+  });
+  clearTimeout(window._bsT);
+  if(boardStateStatus==='saved') window._bsT=setTimeout(()=>{
+    ['board-state-status','board-state-status-team'].forEach(id=>{
+      const el=document.getElementById(id); if(el) el.style.display='none';
+    });
+  },3000);
+}
+
+// Вызывается из всех правок вакансий
+function boardVacsChanged(){
+  _saveTeamCfgLocal();
+  boardStateWrite('vacancies');
+}
 
 // Закрытие внутреннего вопроса — пишем напрямую по номеру строки через addiction-crud webhook
 // (тот же механизм HTTP Request + OAuth, надёжнее чем матчинг по тексту)
