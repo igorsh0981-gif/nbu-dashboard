@@ -95,6 +95,27 @@ def _write_sheet(sheet_name, values, _creds, _sheet_id):
     return http_write(sheet_name, values)
 builtins._write_sheet = _write_sheet
 
+def ensure_sheet(spreadsheet, sheet_name, need_rows, need_cols):
+    """Создаёт лист, если его нет, и расширяет, если строк не хватает.
+
+    values.update с диапазоном за пределами сетки возвращает 400, а http_write
+    на не-200 бросает исключение — без этой проверки один лишний релиз в Jira
+    уронил бы весь прогон.
+    """
+    try:
+        ws = spreadsheet.worksheet(sheet_name)
+    except Exception:
+        ws = spreadsheet.add_worksheet(sheet_name,
+                                       rows=max(need_rows + 50, 100),
+                                       cols=max(need_cols, 10))
+        print(f"      лист {sheet_name} создан ({need_rows + 50} строк)")
+        return ws
+    if ws.row_count < need_rows or ws.col_count < need_cols:
+        ws.resize(rows=max(ws.row_count, need_rows + 50),
+                  cols=max(ws.col_count, need_cols))
+        print(f"      лист {sheet_name} расширен до {max(ws.row_count, need_rows + 50)} строк")
+    return ws
+
 # ─── PIPELINE ────────────────────────────────────────────────────────────────
 total_start = time.time()
 here = Path(__file__).parent
@@ -142,6 +163,10 @@ print("\n▶ [3/5] Записываю normalized...")
 cells = http_write('normalized', [headers_norm] + rows_out)
 print(f"✅ normalized: {cells} ячеек")
 
+import gspread
+gc = gspread.authorize(creds)
+ss = gc.open_by_key(SHEET_ID)
+
 # ── 3.5 Записываем jira_versions ──────────────────────────────
 # Строго ДО release agent: он читает этот лист из Google Sheets.
 print("\n▶ [3.5/5] Записываю jira_versions...")
@@ -150,8 +175,15 @@ if len(df_versions) > 0:
         ['' if pd.isna(x) else str(x) for x in r]
         for r in df_versions.itertuples(index=False)
     ]
-    cells = http_write('jira_versions', v_vals)
-    print(f"✅ jira_versions: {len(df_versions)} версий, {cells} ячеек")
+    try:
+        ensure_sheet(ss, 'jira_versions', len(v_vals), len(df_versions.columns))
+        cells = http_write('jira_versions', v_vals)
+        print(f"✅ jira_versions: {len(df_versions)} версий, {cells} ячеек")
+    except Exception as e:
+        # Падение на версиях не должно ронять прогон: задачи важнее,
+        # а релизы в худшем случае возьмут даты из прежнего листа.
+        print(f"❌ jira_versions не записан: {e}")
+        print("   Прогон продолжается, релизы возьмут предыдущие даты.")
 else:
     # Лист НЕ трогаем: http_write сначала очищает диапазон, и пустая запись
     # стёрла бы все даты и описания релизов из-за одного неудачного запроса.
@@ -160,9 +192,6 @@ else:
 
 # ── 4. Release Agent ──────────────────────────────────────────
 print("\n▶ [4/5] nbu_release_agent_v2.py")
-import gspread
-gc = gspread.authorize(creds)
-ss = gc.open_by_key(SHEET_ID)
 g3 = {**g2, 'ss': ss, '_write_sheet': _write_sheet, 'creds': creds, 'SHEET_ID': SHEET_ID}
 exec((here / 'nbu_release_agent_v2.py').read_text(encoding='utf-8'), g3)
 print(f"✅ Release Agent готов")
