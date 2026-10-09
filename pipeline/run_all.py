@@ -112,9 +112,11 @@ g = {**globals(), **vars(builtins)}
 exec(code, g)
 # Переносим результаты в глобальный контекст
 import pandas as pd
-df_csv     = g.get('df_csv', pd.DataFrame())
-df_history = g.get('df_history', pd.DataFrame())
-print(f"✅ df_csv: {len(df_csv)} задач, история: {len(df_history)} записей")
+df_csv      = g.get('df_csv', pd.DataFrame())
+df_history  = g.get('df_history', pd.DataFrame())
+df_versions = g.get('df_versions', pd.DataFrame())
+print(f"✅ df_csv: {len(df_csv)} задач, история: {len(df_history)} записей, "
+      f"версий: {len(df_versions)}")
 
 # Фильтруем status_history — только последние 365 дней
 if len(df_history) > 0 and 'date' in df_history.columns:
@@ -139,6 +141,22 @@ print(f"✅ Нормализовано: {len(rows_out)} строк")
 print("\n▶ [3/5] Записываю normalized...")
 cells = http_write('normalized', [headers_norm] + rows_out)
 print(f"✅ normalized: {cells} ячеек")
+
+# ── 3.5 Записываем jira_versions ──────────────────────────────
+# Строго ДО release agent: он читает этот лист из Google Sheets.
+print("\n▶ [3.5/5] Записываю jira_versions...")
+if len(df_versions) > 0:
+    v_vals = [list(df_versions.columns)] + [
+        ['' if pd.isna(x) else str(x) for x in r]
+        for r in df_versions.itertuples(index=False)
+    ]
+    cells = http_write('jira_versions', v_vals)
+    print(f"✅ jira_versions: {len(df_versions)} версий, {cells} ячеек")
+else:
+    # Лист НЕ трогаем: http_write сначала очищает диапазон, и пустая запись
+    # стёрла бы все даты и описания релизов из-за одного неудачного запроса.
+    print("⚠ Версии из Jira не получены — лист jira_versions оставлен как есть, "
+          "релизы возьмут предыдущие даты")
 
 # ── 4. Release Agent ──────────────────────────────────────────
 print("\n▶ [4/5] nbu_release_agent_v2.py")
