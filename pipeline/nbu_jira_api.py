@@ -1,7 +1,8 @@
 """
 NBU Jira API Loader v2
-Загружает все задачи + историю статусов через Jira REST API.
-Пишет листы: normalized (df_csv), status_history, jira_versions
+Загружает все задачи, историю статусов и версии проекта через Jira REST API.
+Готовит данные для листов: normalized (df_csv), status_history (df_history),
+jira_versions (df_versions). Саму запись делает run_all.py.
 
 Запуск в Google Colab ПОСЛЕ nbu_config.py:
     exec(open(f'{DRIVE_DIR}/nbu_jira_api.py', encoding='utf-8').read())
@@ -93,6 +94,106 @@ def fix_version(v):
         v = v + '.0'
     return v
 
+# ─── ВЕРСИИ ПРОЕКТА ──────────────────────────────────────────────────────────
+# Лист jira_versions раньше никто не обновлял: nbu_release_agent_v2.py его
+# только ЧИТАЕТ, а записи не было нигде. Поэтому счётчики задач обновлялись
+# каждый прогон, а даты, описания и признак «выпущен» замерзали на том, что
+# когда-то вставили руками. Теперь версии тянем из того же API.
+
+_RU_MON = {'янв': 1, 'фев': 2, 'мар': 3, 'апр': 4, 'май': 5, 'мая': 5,
+           'июн': 6, 'июл': 7, 'авг': 8, 'сен': 9, 'окт': 10, 'ноя': 11, 'дек': 12}
+_EN_MON = {'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'may': 5, 'jun': 6,
+           'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12}
+
+def parse_user_date(s):
+    """'03/авг/26' или '03/Aug/26' → '2026-08-03'.
+
+    Jira отдаёт userStartDate / userReleaseDate в локали инстанса. У нас она
+    русская, поэтому strptime с месяцами по умолчанию на них падает — это и
+    есть та самая ловушка с форматами. Разбираем месяц по словарю.
+    """
+    s = (s or '').strip()
+    m = re.fullmatch(r'(\d{1,2})[/\s.\-]([A-Za-zА-Яа-я]{3,})[/\s.\-](\d{2,4})', s)
+    if not m:
+        return ''
+    day = int(m.group(1))
+    mon = _RU_MON.get(m.group(2).lower()[:3]) or _EN_MON.get(m.group(2).lower()[:3])
+    year = int(m.group(3))
+    if not mon:
+        return ''
+    if year < 100:
+        year += 2000
+    return f"{year:04d}-{mon:02d}-{day:02d}"
+
+def version_date(v, iso_key, user_key):
+    """Сначала ISO-поле (startDate / releaseDate), оно уже YYYY-MM-DD.
+    Если его нет — разбираем локализованное user*Date."""
+    d = (v.get(iso_key) or '').strip()
+    if d:
+        return d[:10]
+    return parse_user_date(v.get(user_key, ''))
+
+def load_project_versions():
+    """Версии проекта. Jira Server/DC отдаёт плоский массив;
+    на всякий случай поддерживаем и постраничный эндпоинт."""
+    try:
+        data = jira_get(f'{JIRA_URL}/rest/api/2/project/{PROJECT_KEY}/versions')
+        if isinstance(data, list):
+            return data
+    except Exception as e:
+        print(f"  ⚠ /project/{PROJECT_KEY}/versions не ответил: {e}")
+    out, start = [], 0
+    while True:
+        page = jira_get(f'{JIRA_URL}/rest/api/2/project/{PROJECT_KEY}/version',
+                        params={'startAt': start, 'maxResults': 50})
+        vals = page.get('values', [])
+        out.extend(vals)
+        if page.get('isLast', True) or not vals:
+            break
+        start += len(vals)
+    return out
+
+print("▶ Загружаю версии проекта...")
+version_map, archived_cnt = {}, 0
+try:
+    for v in load_project_versions():
+        # Архивные НЕ пропускаем. Если их выкинуть, релиз потеряет даты и
+        # признак released, агент подставит 'unreleased' — и старые версии
+        # с прошедшей датой разом покажутся просроченными.
+        if v.get('archived'):
+            archived_cnt += 1
+        # Имя прогоняем через тот же fix_version, что и fixVersions задач —
+        # иначе release_agent не склеит версию с её задачами по имени.
+        name = fix_version(str(v.get('name', '')))
+        if not name:
+            continue
+        if name in version_map:
+            print(f"  ⚠ После нормализации совпали имена версий: «{name}» "
+                  f"(исходные «{version_map[name]['_raw']}» и «{v.get('name')}») — беру последнюю")
+        version_map[name] = {
+            'release':      name,
+            'description':  (v.get('description') or '').strip(),
+            'start_date':   version_date(v, 'startDate', 'userStartDate'),
+            'release_date': version_date(v, 'releaseDate', 'userReleaseDate'),
+            'jira_status':  'released' if v.get('released') else 'unreleased',
+            '_raw':         v.get('name', ''),
+        }
+except Exception as e:
+    print(f"  ❌ Версии не загрузились: {e}")
+    print(f"     Лист jira_versions останется прежним, релизы возьмут старые даты.")
+
+VERSION_COLS = ['release', 'description', 'start_date', 'release_date', 'jira_status']
+df_versions = pd.DataFrame(
+    [{k: row[k] for k in VERSION_COLS} for row in version_map.values()],
+    columns=VERSION_COLS,
+)
+if len(df_versions):
+    _no_end = int((df_versions['release_date'] == '').sum())
+    print(f"✅ Версий получено: {len(df_versions)}"
+          f" (из них архивных: {archived_cnt}, без даты выпуска: {_no_end})")
+else:
+    print("⚠ Версий получено: 0")
+
 # ─── ФОРМИРОВАНИЕ df_csv ─────────────────────────────────────────────────────
 print("▶ Формирую df_csv...")
 rows = []
@@ -180,3 +281,18 @@ print(f"\n✅ nbu_jira_api.py готов")
 print(f"   Задач загружено:  {len(df_csv)}")
 print(f"   Из них Эпиков:    {len(df_csv[df_csv['Тип задачи']=='Epic'])}")
 print(f"   История статусов: {len(df_history)} переходов")
+print(f"   Версий проекта:   {len(df_versions)}")
+
+# Версии, на которые ссылаются задачи, но которых нет среди версий проекта.
+# Обычно это рассинхрон нормализации имён — релиз получит пустые даты.
+if len(df_versions):
+    _known = set(df_versions['release'])
+    _used = set()
+    for _c in ['Исправить в версиях', 'Исправить в версиях.1',
+               'Исправить в версиях.2', 'Исправить в версиях.3']:
+        _used |= {str(x).strip() for x in df_csv[_c] if str(x).strip()}
+    _orphans = sorted(_used - _known)
+    if _orphans:
+        print(f"   ⚠ Версии у задач, которых нет в списке версий проекта "
+              f"({len(_orphans)}): {', '.join(_orphans[:10])}"
+              f"{' …' if len(_orphans) > 10 else ''}")
