@@ -13788,9 +13788,9 @@ function openAsgnByStatus(login,cat){
 function openRiskDetail(type,relId){
   const ud=BUNDLE.undist_tasks||{};
   let tasks=[],title='';
-  if(type==='overdue'){tasks=(ud.overdue||[]).filter(t=>t.v===relId);title=`Просроченные — ${relId}`;}
-  else if(type==='noasgn'){tasks=(ud.no_asgn||[]).filter(t=>t.v===relId);title=`Без исполнителя — ${relId}`;}
-  else if(type==='stale'){tasks=(BUNDLE.stale||[]).filter(t=>t.v===relId);title=`Без движения — ${relId}`;}
+  if(type==='overdue'){tasks=(ud.overdue||[]).filter(t=>relHas(t,relId));title=`Просроченные — ${relId}`;}
+  else if(type==='noasgn'){tasks=(ud.no_asgn||[]).filter(t=>relHas(t,relId));title=`Без исполнителя — ${relId}`;}
+  else if(type==='stale'){tasks=(BUNDLE.stale||[]).filter(t=>relHas(t,relId));title=`Без движения — ${relId}`;}
   openTaskModal(title,tasks.map(t=>({k:t.k,d:t.d,t:t.t,status:t.s,a:t.a||'—'})));
 }
 function openKpiTasks(cat,label){
@@ -14372,13 +14372,13 @@ const RISK_TASK_CATS=RISK_TASK_CATS_ALL.filter(c=>c.epic);
 
 function riskTasksForRelease(relId){
   const ud=BUNDLE.undist_tasks||{};
-  const relTasks=Object.values(BUNDLE.asgn_tasks||{}).flat().filter(t=>t.v===relId);
+  const relTasks=Object.values(BUNDLE.asgn_tasks||{}).flat().filter(t=>relHas(t,relId));
   const isOpen=t=>{const c=STATUS_CAT_MAP[(t.s||'').toUpperCase()];return c!=='done'&&c!=='rejected';};
   return {
-    stale:        (BUNDLE.stale||[]).filter(t=>t.v===relId),
-    overdue:      (ud.overdue||[]).filter(t=>t.v===relId),
+    stale:        (BUNDLE.stale||[]).filter(t=>relHas(t,relId)),
+    overdue:      (ud.overdue||[]).filter(t=>relHas(t,relId)),
     critical:     relTasks.filter(t=>(t.p||'').toLowerCase().includes('крит')&&isOpen(t)),
-    noasgn:       (ud.no_asgn||[]).filter(t=>t.v===relId),
+    noasgn:       (ud.no_asgn||[]).filter(t=>relHas(t,relId)),
     concentration:relTasks.filter(t=>['testing','inprog'].includes(STATUS_CAT_MAP[(t.s||'').toUpperCase()]||''))
   };
 }
@@ -14423,7 +14423,7 @@ function openEpicRiskTasks(relId,epicName){
 
 function rdmDetailsHTML(r,pct,col){
   const allTasks=Object.values(BUNDLE.asgn_tasks||{}).flat();
-  const relTasks=allTasks.filter(t=>t.v===r.id);
+  const relTasks=allTasks.filter(t=>relHas(t,r.id));
   const riskSets=riskTasksForRelease(r.id);
   const epicRisk=epicRiskMap(riskSets);
   const epicMap={};
@@ -14546,10 +14546,10 @@ function rdmDetailsHTML(r,pct,col){
 
 function rdmOpenRisk(type, relId){
   const ud=BUNDLE.undist_tasks||{};
-  const allTasks=Object.values(BUNDLE.asgn_tasks||{}).flat().filter(t=>t.v===relId);
+  const allTasks=Object.values(BUNDLE.asgn_tasks||{}).flat().filter(t=>relHas(t,relId));
   let tasks=[], title='';
-  if(type==='stale'){tasks=(BUNDLE.stale||[]).filter(t=>t.v===relId);title='Застой задач — '+relId;}
-  else if(type==='noasgn'){tasks=(ud.no_asgn||[]).filter(t=>t.v===relId);title='Без исполнителя — '+relId;}
+  if(type==='stale'){tasks=(BUNDLE.stale||[]).filter(t=>relHas(t,relId));title='Застой задач — '+relId;}
+  else if(type==='noasgn'){tasks=(ud.no_asgn||[]).filter(t=>relHas(t,relId));title='Без исполнителя — '+relId;}
   else if(type==='concentration'){tasks=allTasks.filter(t=>['testing','inprog'].includes(STATUS_CAT_MAP[(t.s||'').toUpperCase()]||''));title='Концентрация этапов — '+relId;}
   else if(type==='external'){
     const rel=releases.find(r=>r.id===relId);
@@ -14572,7 +14572,7 @@ function rdmOpenRisk(type, relId){
 
 function openEpicTasks(relId,epicName){
   const tasks=Object.values(BUNDLE.asgn_tasks||{}).flat()
-    .filter(t=>t.v===relId&&(t.epic_name||'(без эпика)')===epicName);
+    .filter(t=>relHas(t,relId)&&(t.epic_name||'(без эпика)')===epicName);
   openTaskModal('Эпик: '+epicName+' — '+relId,tasks);
 }
 
@@ -15476,7 +15476,7 @@ function calcRisks(relId){
   const ud=BUNDLE.undist_tasks||{};
 
   // 1. Застой: stale/total * weight (30-60=0.5, 60-90=1.0, >90=2.0)
-  const staleItems=(BUNDLE.stale||[]).filter(t=>!relId||t.v===relId);
+  const staleItems=(BUNDLE.stale||[]).filter(t=>relHas(t,relId));
   const staleScore=staleItems.reduce((s,t)=>{
     const d=t.days||0;
     return s+(d>90?2.0:d>60?1.0:d>30?0.5:0.3);
@@ -15513,13 +15513,13 @@ function calcRisks(relId){
 
   // 4. Критические задачи открытые
   const critTasks=Object.values(BUNDLE.asgn_tasks||{}).flat()
-    .filter(t=>(!relId||t.v===relId)&&(t.p||'').toLowerCase().includes('крит')
+    .filter(t=>relHas(t,relId)&&(t.p||'').toLowerCase().includes('крит')
       &&STATUS_CAT_MAP[(t.s||'').toUpperCase()]!=='done'
       &&STATUS_CAT_MAP[(t.s||'').toUpperCase()]!=='rejected');
   const critScore=Math.min(critTasks.length*10,100);
 
   // 5. Без исполнителя
-  const noAsgnItems=(ud.no_asgn||[]).filter(t=>!relId||t.v===relId);
+  const noAsgnItems=(ud.no_asgn||[]).filter(t=>relHas(t,relId));
   const noAsgnScore=tot>0?noAsgnItems.length/tot*100:0;
 
   // 6. Риск срыва даты — агрегат других рисков + фактор даты
@@ -15560,6 +15560,15 @@ function calcRisks(relId){
   };
 }
 
+// Задача принадлежит релизу: в поле v может быть несколько версий через запятую
+// ("2.8.0, 3.0.0"), а id релиза бывает "2.8" и "2.8.0" — сравниваем по-версионно.
+function relHas(t,id){
+  if(!id) return true;
+  const nv=s=>String(s||'').trim().replace(/\.0$/,'');
+  const want=nv(id);
+  return String((t&&t.v)||'').split(',').some(x=>nv(x)===want);
+}
+
 function riskLevel(score){
   if(score>=70) return {label:'Высокий',color:'var(--red)',badge:'br'};
   if(score>=40) return {label:'Средний',color:'var(--amber)',badge:'ba'};
@@ -15593,7 +15602,11 @@ function initRiskRelSel(){
   const opts='<option value="">Все релизы</option>'
     +releases.filter(r=>r.tot>0).map(r=>`<option value="${r.id}">${r.n}</option>`).join('');
   const rSel=document.getElementById('risk-rel-sel');
-  if(rSel) rSel.innerHTML=opts;
+  if(rSel){
+    const keep=rSel.value;           // обновление данных не должно сбрасывать выбранный релиз
+    rSel.innerHTML=opts;
+    if(keep && [...rSel.options].some(o=>o.value===keep)) rSel.value=keep;
+  }
   const vSel=document.getElementById('velocity-rel-sel');
   if(vSel) vSel.innerHTML=opts;
   const vaSel=document.getElementById('velocity-asgn-sel');
@@ -15710,8 +15723,8 @@ function openRiskCatDetail(catId,relId){
   let tasks=[],title='',info='';
 
   if(catId==='stale'){
-    tasks=(BUNDLE.stale||[]).filter(t=>!relId||t.v===relId);
-    title='Застой задач (>14 дней без движения)';
+    tasks=(BUNDLE.stale||[]).filter(t=>relHas(t,relId));
+    title='Застой задач'+(relId?' — '+relId:'')+' (>14 дней без движения)';
     info=`Найдено ${tasks.length} задач без движения. Пороги: 30-60 дн = средний риск, >90 дн = критический.`;
     openTaskModal(title,tasks.map(t=>({k:t.k,d:`${t.days} дней`,t:t.t,status:t.s,a:t.a||'—'})));
     return;
@@ -15754,7 +15767,7 @@ function openRiskCatDetail(catId,relId){
   }
   if(catId==='critical'){
     tasks=Object.values(BUNDLE.asgn_tasks||{}).flat()
-      .filter(t=>(!relId||t.v===relId)&&(t.p||'').toLowerCase().includes('крит')
+      .filter(t=>relHas(t,relId)&&(t.p||'').toLowerCase().includes('крит')
         &&STATUS_CAT_MAP[(t.s||'').toUpperCase()]!=='done'
         &&STATUS_CAT_MAP[(t.s||'').toUpperCase()]!=='rejected');
     title='Критические открытые задачи';
@@ -15762,7 +15775,7 @@ function openRiskCatDetail(catId,relId){
     return;
   }
   if(catId==='noasgn'){
-    tasks=(ud.no_asgn||[]).filter(t=>!relId||t.v===relId);
+    tasks=(ud.no_asgn||[]).filter(t=>relHas(t,relId));
     title='Задачи без исполнителя';
     openTaskModal(title,tasks.map(t=>({k:t.k,d:t.d,t:t.t,status:t.s,a:'—'})));
     return;
@@ -15828,9 +15841,9 @@ function renderRiskText(relId){
   const highRisks=RISK_CATS.filter(c=>scores[c.id]>=70);
   const medRisks=RISK_CATS.filter(c=>scores[c.id]>=40&&scores[c.id]<70);
 
-  const staleItems=(BUNDLE.stale||[]).filter(t=>!relId||t.v===relId).slice(0,3);
+  const staleItems=(BUNDLE.stale||[]).filter(t=>relHas(t,relId)).slice(0,3);
   const critTasks=Object.values(BUNDLE.asgn_tasks||{}).flat()
-    .filter(t=>(!relId||t.v===relId)&&(t.p||'').toLowerCase().includes('крит')
+    .filter(t=>relHas(t,relId)&&(t.p||'').toLowerCase().includes('крит')
       &&STATUS_CAT_MAP[(t.s||'').toUpperCase()]!=='done').slice(0,3);
   // Фильтруем просроченные вопросы по релизу
   const relName3=rel?rel.n:'';
@@ -15898,7 +15911,7 @@ ${rel?`Релиз: ${rel.n}, ${rel.pct_done||0}% выполнено, дата в
 ОЦЕНКИ РИСКОВ (0-100%):
 ${RISK_CATS.map(c=>`- ${c.label}: ${scores[c.id]}%`).join('\n')}
 
-ЗАДАЧИ БЕЗ ДВИЖЕНИЯ: ${(BUNDLE.stale||[]).filter(t=>!relId||t.v===relId).length} шт.
+ЗАДАЧИ БЕЗ ДВИЖЕНИЯ: ${(BUNDLE.stale||[]).filter(t=>relHas(t,relId)).length} шт.
 ОТКРЫТЫХ ВОПРОСОВ К БАНКУ: ${(qData.bank||[]).filter(q=>{
   if(q.closed) return false;
   if(!relId) return true;
@@ -16356,7 +16369,7 @@ function buildSlideData(){
     const relCards=rels.map(r=>{
       const pct=r.tot>0?Math.round((r.done||0)/r.tot*100):0;
       const critTasks=Object.values(BUNDLE.asgn_tasks||{}).flat()
-        .filter(t=>t.v===r.id&&(t.p||'').toLowerCase().includes('крит')
+        .filter(t=>relHas(t,r.id)&&(t.p||'').toLowerCase().includes('крит')
           &&STATUS_CAT_MAP[(t.s||'').toUpperCase()]!=='done').length;
       return {release:r.n,date:r.d||'—',total:r.tot,done:r.done||0,pct,
         inprog:r.inprog||0,testing:r.test||0,todo:r.todo||0,backlog:r.backlog||0,
@@ -16400,7 +16413,7 @@ function buildSlideData(){
 
   // Без движения
   if(blocks.includes('st')){
-    slides.push({type:'stale',tasks:(BUNDLE.stale||[]).filter(t=>!expRelId||t.v===expRelId).slice(0,20).map(t=>({k:t.k,t:t.t,a:t.a,days:t.days}))});
+    slides.push({type:'stale',tasks:(BUNDLE.stale||[]).filter(t=>relHas(t,expRelId)).slice(0,20).map(t=>({k:t.k,t:t.t,a:t.a,days:t.days}))});
   }
 
   // Команда — блоки и вакансии
@@ -19050,9 +19063,9 @@ function renderRiskMatrix(relId){
   let rels=releases.filter(r=>r.tot>0&&r.s!=='released');
   if(relId) rels=rels.filter(r=>r.id===relId);
   const rows=rels.map(r=>{
-    const overdue=(ud.overdue||[]).filter(t=>t.v===r.id).length;
-    const noAsgn=(ud.no_asgn||[]).filter(t=>t.v===r.id).length;
-    const stale=(BUNDLE.stale||[]).filter(t=>t.v===r.id).length;
+    const overdue=(ud.overdue||[]).filter(t=>relHas(t,r.id)).length;
+    const noAsgn=(ud.no_asgn||[]).filter(t=>relHas(t,r.id)).length;
+    const stale=(BUNDLE.stale||[]).filter(t=>relHas(t,r.id)).length;
     const relAgg=BUNDLE.rel_agg?.[r.id]||{};
     const crit=relAgg.prio?.['Критический']||0;
     let dateRisk=false;
